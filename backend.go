@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/gorilla/mux"
 )
@@ -43,6 +45,40 @@ func notFound(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotFound)
 	w.Write([]byte(`{"message": "404"}`))
+}
+
+// function for dealing with parameters
+func params(w http.ResponseWriter, r *http.Request) {
+	// set the parameters passed in as a variable here so it can be dealt with
+	pathParams := mux.Vars(r)
+	w.Header().Set("Content-Type", "application/json")
+
+	// set id to negative one, check to make sure an id is given that is an integer
+	userID := -1
+	var err error
+	if val, ok := pathParams["userID"]; ok {
+		userID, err = strconv.Atoi(val)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"message": "int required"}`))
+			return
+		}
+	}
+
+	commentID := -1
+	if val, ok := pathParams["commentID"]; ok {
+		commentID, err = strconv.Atoi(val)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"message": "int required"}`))
+			return
+		}
+	}
+
+	query := r.URL.Query()
+	location := query.Get("location")
+
+	w.Write([]byte(fmt.Sprintf(`{"userID": %d, "commentID": %d, "location": "%s" }`, userID, commentID, location)))
 }
 
 func main() {
