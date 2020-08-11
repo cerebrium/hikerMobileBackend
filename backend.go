@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"strconv"
@@ -12,11 +13,32 @@ import (
 // declare the structure to be a blank object, so we can attach methods to it
 type server struct{}
 
+// default structure for recieving external http requests
+// var DefaultClient = &http.Client{}
+
 // get function
 func get(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	// response and error from get request for data
+	res, err := http.Get("https://api.darksky.net/forecast/2cd42058712708466e62c7d34e7874f5/37.8267,-122.4233")
+
+	// check if there is an error, handle it
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// get all the data from the response
+	data, _ := ioutil.ReadAll(res.Body)
+
+	// close the response body
+	res.Body.Close()
+
+	// show the data
+	fmt.Printf("%s\n", data)
+
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(`{"message": "GET"}`))
+	w.Write([]byte(data))
 }
 
 // post function
@@ -86,12 +108,12 @@ func main() {
 	r := mux.NewRouter()
 
 	// set each metehod of response to be dealt with by the correct function
-	r.HandleFunc("/", get).Methods(http.MethodGet)
+	r.HandleFunc("/", get).Methods("GET")
 	r.HandleFunc("/", post).Methods(http.MethodPost)
 	r.HandleFunc("/", put).Methods(http.MethodPut)
 	r.HandleFunc("/", delete).Methods(http.MethodDelete)
 	r.HandleFunc("/", notFound)
 
 	// this sets the server to 8080
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(":8080", r))
 }
