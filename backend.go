@@ -1,23 +1,122 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/gorilla/mux"
+	"github.com/joho/godotenv"
+	_ "github.com/joho/godotenv/autoload"
 )
+
+// allows for syncronicity
+var wg sync.WaitGroup
 
 // declare the structure to be a blank object, so we can attach methods to it
 type server struct{}
 
-// default structure for recieving external http requests
-// var DefaultClient = &http.Client{}
+type locationString struct {
+	City string
+}
 
-// get function
-func get(w http.ResponseWriter, r *http.Request) {
+func getLocation(locationBody string) map[string]interface{} {
+	// get the api ket from env
+	mapBoxAPIKey := os.Getenv("MAPBOX_API_KEY")
+
+	// construct the url
+	reqString := fmt.Sprintf("https://api.mapbox.com/geocoding/v5/mapbox.places/%s.json", locationBody)
+	req, err := http.NewRequest("GET", reqString, nil)
+	q := req.URL.Query()
+
+	// add the api key to the url as a parameter
+	q.Add("access_token", mapBoxAPIKey)
+
+	// add the params into the request string
+	req.URL.RawQuery = q.Encode()
+
+	// check if there is an error
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// make the request to the api to get coords back
+	res, err := http.Get(req.URL.String())
+
+	// check for error
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// create the response as data
+	data, _ := ioutil.ReadAll(res.Body)
+
+	var dataMapped map[string]interface{}
+	errMarsh := json.Unmarshal([]byte(data), &dataMapped)
+	if err != nil {
+		log.Fatal(errMarsh)
+	}
+
+	return dataMapped
+}
+
+// function for getting the trail data
+func getTrails(lat, long int) {
+	// load api keys
+	apiKeyHiker := os.Getenv("HIKING_API_KEY")
+
+	// make a request to the hiker url
+	req, err := http.NewRequest("GET", "https://www.hikingproject.com/data/get-trailsa", nil)
+	q := req.URL.Query()
+
+	// add query
+	q.Add("key", apiKeyHiker)
+	q.Add("lat", "47.6062")
+	q.Add("lon", "-122.3321")
+	q.Add("maxDistance", "200")
+
+	req.URL.RawQuery = q.Encode()
+
+	// handle any error that shows up
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// set the request to a get request
+	res, err := http.Get(req.URL.String())
+
+	// handle any error that shows up
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// create the response as data
+	data, _ := ioutil.ReadAll(res.Body)
+
+	// close the response
+	res.Body.Close()
+
+	var dataMapped map[string]interface{}
+	errMarsh := json.Unmarshal([]byte(data), &dataMapped)
+	if err != nil {
+		log.Fatal(errMarsh)
+	}
+
+	// fmt.Println(dataMapped["features"])
+	// print out the data
+	// fmt.Printf("%s\n", data)
+}
+
+// get weather function
+func getWeather(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// response and error from get request for data
@@ -41,35 +140,157 @@ func get(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(data))
 }
 
-// post function
+// get the hiker data
+func getHikerData(w http.ResponseWriter, r *http.Request) {
+	// set the headers of the writting as application/json
+	w.Header().Set("Content-Type", "application/json")
+
+	// getting the body for use
+	// ----------------------------------------------------------------------------
+
+	// check if the size is too large
+	r.Body = http.MaxBytesReader(w, r.Body, 1048576)
+
+	// get the body from the request
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+
+	// set the stype of the response we are looking for
+	var loc locationString
+	err := dec.Decode(&loc)
+	if err != nil {
+		var syntaxError *json.SyntaxError
+		var unmarshalTypeError *json.UnmarshalTypeError
+
+		switch {
+		// syntax error case
+		case errors.As(err, &syntaxError):
+			msg := fmt.Sprintf("Request body contains badly formed JSON (at position %d)", syntaxError.Offset)
+			http.Error(w, msg, http.StatusBadRequest)
+
+			// case of decode returning an EOF because of bad json syntax
+		case errors.Is(err, io.ErrUnexpectedEOF):
+			msg := fmt.Sprintf("Request body contains badly-formed JSON")
+			http.Error(w, msg, http.StatusBadRequest)
+
+			// catch errors where types are being messed up
+		case errors.As(err, &unmarshalTypeError):
+			msg := fmt.Sprintf("Request body contains an invalid value for the %q field (at position %d)", unmarshalTypeError.Field, unmarshalTypeError.Offset)
+			http.Error(w, msg, http.StatusBadRequest)
+
+			// if there are extra unexpected fields in the body it throws an error
+		case strings.HasPrefix(err.Error(), "json: unknown field "):
+			fieldName := strings.TrimPrefix(err.Error(), "json: unknown field ")
+			msg := fmt.Sprintf("Request body contains and unknown field %s", fieldName)
+			http.Error(w, msg, http.StatusBadRequest)
+
+			// if the body is empty it returns an EOF
+		case errors.Is(err, io.EOF):
+			msg := "Request body must not be empty"
+			http.Error(w, msg, http.StatusBadRequest)
+
+			// if the body is too long, handle that
+		case err.Error() == "http: request body too large":
+			msg := "Request body must not be larger than 1MB"
+			http.Error(w, msg, http.StatusRequestEntityTooLarge)
+
+			// default to sending the error and a 500
+		default:
+			log.Println(err.Error())
+			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// If the request body only contained a single JSON object this will return an io.EOF error. So if we get anything else,
+	// we know that there is additional data in the request body.
+	err = dec.Decode(&struct{}{})
+	if err != io.EOF {
+		msg := "Requset body must conatin a single JSON object"
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+
+	// ------------------------------------------------------------------------------------------------------------
+	// call the function with the body city in it
+	locationData := getLocation(loc.City)
+	locationFeatures := locationData["features"]
+	var myInterface interface{}
+
+	// fmt.Println(m)
+	switch vv := locationFeatures.(type) {
+	case string:
+		fmt.Println("is string", vv)
+	case float64:
+		fmt.Println("is float64", vv)
+	case []interface{}:
+		fmt.Println("is an array:")
+		for i, u := range vv {
+			if i == 0 {
+				myInterface = u
+			}
+		}
+	default:
+		fmt.Println("is of a type I don't know how to handle")
+	}
+
+	switch vv := myInterface.(type) {
+	case string:
+		fmt.Println("is string", vv)
+	case float64:
+		fmt.Println("is float64", vv)
+	case []interface{}:
+		for i, u := range vv {
+			fmt.Println(i, u)
+		}
+	default:
+		fmt.Println("is of a type I don't know how to handle")
+	}
+
+	// if locationFeatures.Kind() == reflect.locationFeatures {
+	// 	for _, key := range v.MapKeys() {
+	// 		strct := v.MapIndex(key)
+	// 		fmt.Println(key.Interface(), strct.Interface())
+	// 	}
+	// }
+	// m := locationFeatures.(map[string]interface{})
+
+	// fmt.Println(m)
+
+	// w.WriteHeader(http.StatusOK)
+	// w.Write([]byte(data))
+
+}
+
+// example post function
 func post(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	w.Write([]byte(`{"message": "POST"}`))
 }
 
-// put function
+// example put function
 func put(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	w.Write([]byte(`{"message": "PUT"}`))
 }
 
-// delete function
+// example delete function
 func delete(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"message": "DELETE"}`))
 }
 
-// 404 function
+// example 404 function
 func notFound(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNotFound)
 	w.Write([]byte(`{"message": "404"}`))
 }
 
-// function for dealing with parameters
+// example function for dealing with parameters
 func params(w http.ResponseWriter, r *http.Request) {
 	// set the parameters passed in as a variable here so it can be dealt with
 	pathParams := mux.Vars(r)
@@ -104,11 +325,20 @@ func params(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// allow for env variables
+	err := godotenv.Load()
+
+	// handle error of loading
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	// declares resonses as a variabale to be handeled
 	r := mux.NewRouter()
 
 	// set each metehod of response to be dealt with by the correct function
-	r.HandleFunc("/", get).Methods("GET")
+	r.HandleFunc("/trails", getHikerData).Methods("POST")
+	r.HandleFunc("/weather", getWeather).Methods("GET")
 	r.HandleFunc("/", post).Methods(http.MethodPost)
 	r.HandleFunc("/", put).Methods(http.MethodPut)
 	r.HandleFunc("/", delete).Methods(http.MethodDelete)
