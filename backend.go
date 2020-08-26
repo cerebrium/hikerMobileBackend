@@ -18,6 +18,7 @@ import (
 	_ "github.com/joho/godotenv/autoload"
 )
 
+// ---------------------------------------------------------- structs
 // allows for syncronicity
 var wg sync.WaitGroup
 
@@ -28,7 +29,19 @@ type locationString struct {
 	City string
 }
 
-func getLocation(locationBody string) map[string]interface{} {
+// Response struct to map entire response
+type responceStructure struct {
+	Query    []string      `json:"query"`
+	Features []siteDetails `json:"features"`
+}
+
+type siteDetails struct {
+	Center []float32 `json:"center"`
+}
+
+// ----------------------------------------------------------
+// turn string into lat long
+func getLocation(locationBody string) [2]float32 {
 	// get the api ket from env
 	mapBoxAPIKey := os.Getenv("MAPBOX_API_KEY")
 
@@ -54,33 +67,57 @@ func getLocation(locationBody string) map[string]interface{} {
 	// check for error
 	if err != nil {
 		log.Fatal(err)
+		os.Exit(1)
 	}
 
 	// create the response as data
-	data, _ := ioutil.ReadAll(res.Body)
+	data, errReading := ioutil.ReadAll(res.Body)
 
-	var dataMapped map[string]interface{}
+	// check for errors
+	if errReading != nil {
+		log.Fatal(errReading)
+	}
+
+	// dont need to have eveything in the json described
+	var dataMapped responceStructure
 	errMarsh := json.Unmarshal([]byte(data), &dataMapped)
-	if err != nil {
+
+	// check for errors
+	if errMarsh != nil {
 		log.Fatal(errMarsh)
 	}
 
-	return dataMapped
+	// arrays you have to predefime their size
+	var latLong [2]float32
+
+	// grab the first one... the one i want, and push values into the array
+	for i := 0; i < 1; i++ {
+		latLong[0] = dataMapped.Features[i].Center[0]
+		latLong[1] = dataMapped.Features[i].Center[1]
+	}
+
+	// return the array
+	return latLong
 }
 
+// ----------------------------------------------------------
+// submit lat long into trail fetching function
 // function for getting the trail data
-func getTrails(lat, long int) {
+func getTrails(latLong [2]float32) []byte {
 	// load api keys
 	apiKeyHiker := os.Getenv("HIKING_API_KEY")
+	lat := fmt.Sprintf("%.6f", latLong[1])
+	lon := fmt.Sprintf("%.6f", latLong[0])
+	fmt.Println("lat: ", lat, "\nLon: ", lon)
 
 	// make a request to the hiker url
-	req, err := http.NewRequest("GET", "https://www.hikingproject.com/data/get-trailsa", nil)
+	req, err := http.NewRequest("GET", "https://www.hikingproject.com/data/get-trails", nil)
 	q := req.URL.Query()
 
 	// add query
 	q.Add("key", apiKeyHiker)
-	q.Add("lat", "47.6062")
-	q.Add("lon", "-122.3321")
+	q.Add("lat", lat)
+	q.Add("lon", lon)
 	q.Add("maxDistance", "200")
 
 	req.URL.RawQuery = q.Encode()
@@ -89,7 +126,7 @@ func getTrails(lat, long int) {
 	if err != nil {
 		log.Fatal(err)
 	}
-
+	fmt.Println(req.URL.String())
 	// set the request to a get request
 	res, err := http.Get(req.URL.String())
 
@@ -110,9 +147,8 @@ func getTrails(lat, long int) {
 		log.Fatal(errMarsh)
 	}
 
-	// fmt.Println(dataMapped["features"])
-	// print out the data
-	// fmt.Printf("%s\n", data)
+	// return data
+	return data
 }
 
 // get weather function
@@ -210,55 +246,11 @@ func getHikerData(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msg, http.StatusBadRequest)
 		return
 	}
+	// send the data back
+	fmt.Println(getTrails(getLocation(loc.City)))
 
-	// ------------------------------------------------------------------------------------------------------------
-	// call the function with the body city in it
-	locationData := getLocation(loc.City)
-	locationFeatures := locationData["features"]
-	var myInterface interface{}
-
-	// fmt.Println(m)
-	switch vv := locationFeatures.(type) {
-	case string:
-		fmt.Println("is string", vv)
-	case float64:
-		fmt.Println("is float64", vv)
-	case []interface{}:
-		fmt.Println("is an array:")
-		for i, u := range vv {
-			if i == 0 {
-				myInterface = u
-			}
-		}
-	default:
-		fmt.Println("is of a type I don't know how to handle")
-	}
-
-	switch vv := myInterface.(type) {
-	case string:
-		fmt.Println("is string", vv)
-	case float64:
-		fmt.Println("is float64", vv)
-	case []interface{}:
-		for i, u := range vv {
-			fmt.Println(i, u)
-		}
-	default:
-		fmt.Println("is of a type I don't know how to handle")
-	}
-
-	// if locationFeatures.Kind() == reflect.locationFeatures {
-	// 	for _, key := range v.MapKeys() {
-	// 		strct := v.MapIndex(key)
-	// 		fmt.Println(key.Interface(), strct.Interface())
-	// 	}
-	// }
-	// m := locationFeatures.(map[string]interface{})
-
-	// fmt.Println(m)
-
-	// w.WriteHeader(http.StatusOK)
-	// w.Write([]byte(data))
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(getTrails(getLocation(loc.City))))
 
 }
 
